@@ -119,7 +119,8 @@ for file_path in measurement_dir.rglob("*.csv"):
         trial_id = file_path.parent.name.split('_')[-1]
         subject_id = file_path.parent.parent.name[0:3]
         trial_name = f"Subject {subject_id} - trial {trial_type} #{trial_id}"
-
+        if sensor_id in ['3', '4']:
+            df_filtered[['FreeAcc_X', 'FreeAcc_Z']] = df_filtered[['FreeAcc_Z', 'FreeAcc_X']].copy()
         sensor_data.setdefault(trial_name, {})[sensor_id] = {
             'data': df_filtered,
             'trial_type': trial_type,
