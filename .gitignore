@@ -1,2 +1,9 @@
 # Python virtual environment
 venv
+# JetBrains IDEs
+.idea/
+# VS Code
+.vscode/
+# Output data
+*/plots/
+*/stats.csv
