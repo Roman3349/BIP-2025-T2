@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from scipy.signal import butter, filtfilt, find_peaks
 
 # Define the measurement directory and output directory
-measurement_dir = Path("Data Collection 07-may")
+measurement_dir = Path("data")
 output_dir = Path("plots")
 # Create an output directory if it doesn't exist
 output_dir.mkdir(exist_ok=True)
@@ -19,8 +19,8 @@ cutoff = 2
 order = 4
 b, a = butter(
     N=order, # Filter order
-    Wn=cutoff / (0.5 * fs), # Nyquist (normalized) frequency
-    btype='low', # Low-pass filter
+    Wn=[0.1  / (0.5 * fs), cutoff / (0.5 * fs)], # Nyquist (normalized) frequency
+    btype='bandpass', # Low-pass filter
     analog=False, # Digital filter
     output='ba', # Output type - numerator and denominator
 )
@@ -67,14 +67,15 @@ def get_trial_type(folder_name) -> str:
     :param folder_name: Name of the folder containing the trial data
     :return: String representing the trial type
     """
-    if folder_name == "Left_5 cycles":
-        return "Left leg - 5 cycles"
-    if folder_name == "Left_10 cycles":
-        return "Left leg - 10 cycles"
-    if folder_name == "Right_5 cycles":
-        return "Right leg - 5 cycles"
-    if folder_name == "Right_10 cycles":
-        return "Right leg - 10 cycles"
+    trial = folder_name.split('_')[-1]
+    if trial == 'R1':
+        return "Right leg - 1st trial"
+    if trial == 'R2':
+        return "Right leg - 2nd trial"
+    if trial == 'L1':
+        return "Left leg - 1st trial"
+    if trial == 'L2':
+        return "Left leg - 2nd trial"
     return "Unknown type"
 
 
@@ -115,10 +116,12 @@ for file_path in measurement_dir.rglob("*.csv"):
         df_filtered['FreeAcc_Total'] = (df_filtered[['FreeAcc_X', 'FreeAcc_Y', 'FreeAcc_Z']] ** 2).sum(axis=1).pow(0.5)
         # Parse the sensor ID and trial information from the file path
         sensor_id = file_path.stem.split('-')[0]
-        trial_type = get_trial_type(file_path.parent.parent.name)
-        trial_id = file_path.parent.name.split('_')[-1]
+        trial_type = get_trial_type(file_path.parent.name)
+        trial_id = file_path.parent.name.split('_')[1]
+        if trial_type == "Unknown type":
+            trial_type += f" - {trial_id}"
         subject_id = file_path.parent.parent.name[0:3]
-        trial_name = f"Subject {subject_id} - trial {trial_type} #{trial_id}"
+        trial_name = f"Subject {subject_id} - trial {trial_type}"
         if sensor_id in ['3', '4']:
             df_filtered[['FreeAcc_X', 'FreeAcc_Z']] = df_filtered[['FreeAcc_Z', 'FreeAcc_X']].copy()
         sensor_data.setdefault(trial_name, {})[sensor_id] = {
@@ -170,11 +173,14 @@ for trial_name, sensors in sensor_data.items():
 
             # Plot kicks
             if axis != "FreeAcc_Total" and len(y) > 0:
-                kicks = detect_kicks_with_peaks(t, y, max(max(y) * 0.33, (3.0 if axis == "FreeAcc_Y" else 2.0)))
+                kicks = detect_kicks_with_peaks(t, y, max(max(y) * 0.33, (0.5 if sensor_id == 4 else 2.0)))
                 for peak_time, peak_value in kicks:
-                    ax.axvspan(peak_time - 0.1, peak_time + 0.1, color='blue', alpha=0.2)
+                    ax.plot(peak_time, peak_value, 'bo', markersize=4)
+                    # Add a vertical line at the step time
+                    ax.axvline(x=peak_time, color='blue', linestyle='--', alpha=0.5)
+                    ax.axvspan(peak_time - 0.1, peak_time + 0.1, color='blue', alpha=0.1)
 
-                if axis == "FreeAcc_Y":
+                if axis == "FreeAcc_X":
                     sensors[sensor_id]['max_acc'] = max(y)
                     sensors[sensor_id]['kick_count'] = len(kicks)
                     sensors[sensor_id]['duration'] = t[-1] - t[0]
