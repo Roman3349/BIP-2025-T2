@@ -59,7 +59,11 @@ def load_sensor_csv(filepath) -> pd.DataFrame:
     df['SampleTimeFine'] = ticks
     # Convert ticks to seconds and set as index
     df['Time_s'] = (df['SampleTimeFine'] - df['SampleTimeFine'].min()) * 1e-6
-    df = df.set_index('Time_s')
+    df = df[[
+        'Euler_X', 'Euler_Y', 'Euler_Z',
+        'FreeAcc_X', 'FreeAcc_Y', 'FreeAcc_Z',
+        'Time_s',
+    ]].set_index('Time_s').apply(lambda x: filtfilt(b, a, x), axis=0)
     # Fix axes
     sensor_id = filepath.stem.split('-')[0]
     if sensor_id in ['3', '4']:
@@ -134,7 +138,6 @@ for file_path in measurement_dir.rglob("*.csv"):
         print(f"Processing {file_path}")
         # Load and filter the sensor data
         df = load_sensor_csv(file_path)
-        df_filtered = df.apply(lambda x: filtfilt(b, a, x), axis=0)
         # Parse the sensor ID and trial information from the file path
         sensor_id = file_path.stem.split('-')[0]
         trial_type = get_trial_type(file_path.parent.name)
@@ -143,9 +146,8 @@ for file_path in measurement_dir.rglob("*.csv"):
             trial_type += f" - {trial_id}"
         subject_id = file_path.parent.parent.name[0:3]
         trial_name = f"Subject {subject_id} - trial {trial_type}"
-        unit = "unknows [-]"
         sensor_data.setdefault(trial_name, {})[sensor_id] = {
-            'data': df_filtered,
+            'data': df,
             'trial_type': trial_type,
             'label': sensor_labels.get(sensor_id, f"Sensor {sensor_id}"),
             'color': sensor_colors.get(sensor_id, 'black')
@@ -195,7 +197,7 @@ for trial_name, sensors in sensor_data.items():
             for gap_start, gap_end in gaps:
                 ax.axvspan(gap_start, gap_end, color='red', alpha=0.3)
 
-            # Plot kicks in FreeAcc_* except FreeAcc_Total
+            # Plot pushes in FreeAcc_* except FreeAcc_Total
             if axis.startswith("FreeAcc_") and axis != "FreeAcc_Total" and len(y) > 0:
                 kicks = detect_kicks_with_peaks(t, y, max(max(y) * 0.33, (0.5 if sensor_id == 4 else 2.0)))
                 for peak_time, peak_value in kicks:
@@ -217,7 +219,7 @@ for trial_name, sensors in sensor_data.items():
             elif axis.startswith("Velocity_"):
                 unit_label = 'velocity [m/s]'
             elif axis.startswith("Euler_"):
-                unit_label = 'angular velocity [°/s]'
+                unit_label = 'euler angle [°]'
             # Set the title and labels for each subplot
             ax.set_ylabel(sensor_info['label'] + "\n" + unit_label, fontsize=10)
             # Show grid for better readability
@@ -235,3 +237,23 @@ for trial_name, sensors in sensor_data.items():
         fig.savefig(output_path)
         plt.close(fig)
 
+results = []
+for trial_name, sensors in sensor_data.items():
+    for sensor_info in sensors.values():
+        pushes = len(sensor_info['kicks'])
+        duration = sensor_info['duration']
+        cadence = pushes / duration
+        max_acc = sensor_info['max_acc']
+
+        results.append({
+            'axis': sensor_info['axis'],
+            'trial_name': trial_name,
+            'pushes': pushes,
+            'duration': duration,
+            'cadence': cadence,
+        })
+
+with open("stats.csv", 'w', newline='') as f:
+    writer = csv.DictWriter(f, fieldnames=results[0].keys())
+    writer.writeheader()
+    writer.writerows(results)
