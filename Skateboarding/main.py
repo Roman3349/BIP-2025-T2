@@ -5,11 +5,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy.integrate import cumulative_trapezoid
 from scipy.signal import butter, filtfilt, find_peaks
 
 # Define the measurement directory and output directory
 measurement_dir = Path("data")
 output_dir = Path("plots")
+for file in output_dir.rglob("*.png"):
+    os.remove(file)
 # Create an output directory if it doesn't exist
 output_dir.mkdir(exist_ok=True)
 
@@ -19,8 +22,8 @@ cutoff = 2
 order = 4
 b, a = butter(
     N=order, # Filter order
-    Wn=[0.1  / (0.5 * fs), cutoff / (0.5 * fs)], # Nyquist (normalized) frequency
-    btype='bandpass', # Low-pass filter
+    Wn=[0.05  / (0.5 * fs), cutoff / (0.5 * fs)], # Nyquist (normalized) frequency
+    btype='bandpass', # Band-pass filter
     analog=False, # Digital filter
     output='ba', # Output type - numerator and denominator
 )
@@ -57,8 +60,28 @@ def load_sensor_csv(filepath) -> pd.DataFrame:
     # Convert ticks to seconds and set as index
     df['Time_s'] = (df['SampleTimeFine'] - df['SampleTimeFine'].min()) * 1e-6
     df = df.set_index('Time_s')
+    # Fix axes
+    sensor_id = filepath.stem.split('-')[0]
+    if sensor_id in ['3', '4']:
+        df[['FreeAcc_X', 'FreeAcc_Z']] = df[['FreeAcc_Z', 'FreeAcc_X']].copy()
 
-    return df[['FreeAcc_X', 'FreeAcc_Y', 'FreeAcc_Z']]
+    # Calculate velocity
+    for axis in ['X', 'Y', 'Z']:
+        df[f'Velocity_{axis}'] = cumulative_trapezoid(df[f'FreeAcc_{axis}'], dx=(1 / fs), initial=0)
+        b1, a1 = butter(
+            N=order,  # Filter order
+            Wn=0.25 / (0.5 * fs),  # Nyquist (normalized) frequency
+            btype='high',  # High-pass filter
+            analog=False,  # Digital filter
+            output='ba',  # Output type - numerator and denominator
+        )
+        df[f'Velocity_{axis}'] = filtfilt(b1, a1, df[f'Velocity_{axis}'])
+
+    return df[[
+        'Euler_X', 'Euler_Y', 'Euler_Z',
+        'FreeAcc_X', 'FreeAcc_Y', 'FreeAcc_Z',
+        'Velocity_X', 'Velocity_Y', 'Velocity_Z',
+    ]]
 
 
 def get_trial_type(folder_name) -> str:
@@ -69,13 +92,13 @@ def get_trial_type(folder_name) -> str:
     """
     trial = folder_name.split('_')[-1]
     if trial == 'R1':
-        return "Right leg - 1st trial"
+        return "Right leg #1"
     if trial == 'R2':
-        return "Right leg - 2nd trial"
+        return "Right leg #2"
     if trial == 'L1':
-        return "Left leg - 1st trial"
+        return "Left leg #1"
     if trial == 'L2':
-        return "Left leg - 2nd trial"
+        return "Left leg #2"
     return "Unknown type"
 
 
@@ -112,8 +135,6 @@ for file_path in measurement_dir.rglob("*.csv"):
         # Load and filter the sensor data
         df = load_sensor_csv(file_path)
         df_filtered = df.apply(lambda x: filtfilt(b, a, x), axis=0)
-        # Calculate the total free acceleration
-        df_filtered['FreeAcc_Total'] = (df_filtered[['FreeAcc_X', 'FreeAcc_Y', 'FreeAcc_Z']] ** 2).sum(axis=1).pow(0.5)
         # Parse the sensor ID and trial information from the file path
         sensor_id = file_path.stem.split('-')[0]
         trial_type = get_trial_type(file_path.parent.name)
@@ -122,12 +143,11 @@ for file_path in measurement_dir.rglob("*.csv"):
             trial_type += f" - {trial_id}"
         subject_id = file_path.parent.parent.name[0:3]
         trial_name = f"Subject {subject_id} - trial {trial_type}"
-        if sensor_id in ['3', '4']:
-            df_filtered[['FreeAcc_X', 'FreeAcc_Z']] = df_filtered[['FreeAcc_Z', 'FreeAcc_X']].copy()
+        unit = "unknows [-]"
         sensor_data.setdefault(trial_name, {})[sensor_id] = {
             'data': df_filtered,
             'trial_type': trial_type,
-            'label': sensor_labels.get(sensor_id, f"Sensor {sensor_id}") + "\nfree acceleration [m/s²]",
+            'label': sensor_labels.get(sensor_id, f"Sensor {sensor_id}"),
             'color': sensor_colors.get(sensor_id, 'black')
         }
 
@@ -135,7 +155,11 @@ for file_path in measurement_dir.rglob("*.csv"):
         print(f"Error processing {file_path}: {e}")
 
 for trial_name, sensors in sensor_data.items():
-    for axis in ['FreeAcc_X', 'FreeAcc_Y', 'FreeAcc_Z', 'FreeAcc_Total']:
+    for axis in [
+        'Euler_X', 'Euler_Y', 'Euler_Z',
+        'FreeAcc_X', 'FreeAcc_Y', 'FreeAcc_Z',
+        'Velocity_X', 'Velocity_Y', 'Velocity_Z',
+    ]:
         print(f"Plotting {trial_name} - {axis}")
         fig, axs = plt.subplots(len(sensors), 1, figsize=(10, 2.5 * len(sensors)), sharex=True)
 
@@ -171,8 +195,8 @@ for trial_name, sensors in sensor_data.items():
             for gap_start, gap_end in gaps:
                 ax.axvspan(gap_start, gap_end, color='red', alpha=0.3)
 
-            # Plot kicks
-            if axis != "FreeAcc_Total" and len(y) > 0:
+            # Plot kicks in FreeAcc_* except FreeAcc_Total
+            if axis.startswith("FreeAcc_") and axis != "FreeAcc_Total" and len(y) > 0:
                 kicks = detect_kicks_with_peaks(t, y, max(max(y) * 0.33, (0.5 if sensor_id == 4 else 2.0)))
                 for peak_time, peak_value in kicks:
                     ax.plot(peak_time, peak_value, 'bo', markersize=4)
@@ -181,25 +205,33 @@ for trial_name, sensors in sensor_data.items():
                     ax.axvspan(peak_time - 0.1, peak_time + 0.1, color='blue', alpha=0.1)
 
                 if axis == "FreeAcc_X":
+                    sensors[sensor_id]['axis'] = axis
                     sensors[sensor_id]['max_acc'] = max(y)
                     sensors[sensor_id]['kick_count'] = len(kicks)
                     sensors[sensor_id]['duration'] = t[-1] - t[0]
                     sensors[sensor_id]['kicks'] = kicks
 
+            unit_label = 'unknown [-]'
+            if axis.startswith("FreeAcc_"):
+                unit_label = 'acceleration [m/s²]'
+            elif axis.startswith("Velocity_"):
+                unit_label = 'velocity [m/s]'
+            elif axis.startswith("Euler_"):
+                unit_label = 'angular velocity [°/s]'
             # Set the title and labels for each subplot
-            ax.set_ylabel(sensor_info['label'])
+            ax.set_ylabel(sensor_info['label'] + "\n" + unit_label, fontsize=10)
             # Show grid for better readability
             ax.grid(True)
 
         # Set the x-axis label for the last subplot
         axs[-1].set_xlabel("Time [s]")
         # Set the title for the entire figure
-        fig.suptitle(f"{trial_name} - {"Axis: " + axis[-1] if axis != 'FreeAcc_Total' else 'Total'}", fontsize=14)
+        fig.suptitle(f"{trial_name} - {"Axis: " + axis}", fontsize=14)
         # Adjust the layout to prevent overlap
         fig.tight_layout(rect=(0, 0, 1, 0.95))
 
         # Save the figure to the output directory
-        output_path = output_dir / f"{trial_name.replace(' ', '_')}_{axis[-1] if axis != 'FreeAcc_Total' else 'Total'}.png"
+        output_path = output_dir / f"{trial_name.replace(' ', '_')}_{axis}.png"
         fig.savefig(output_path)
         plt.close(fig)
 
