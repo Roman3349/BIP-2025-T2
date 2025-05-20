@@ -5,9 +5,9 @@ from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-from numpy.ma.core import negative
 from scipy.integrate import cumulative_trapezoid
 from scipy.signal import butter, filtfilt, find_peaks
+from scipy.spatial.transform import Rotation
 
 # Define the measurement directory and output directory
 measurement_dir = Path("data")
@@ -62,8 +62,14 @@ def load_sensor_csv(filepath) -> pd.DataFrame:
     df['SampleTimeFine'] = ticks
     # Convert ticks to seconds and set as index
     df['Time_s'] = (df['SampleTimeFine'] - df['SampleTimeFine'].min()) * 1e-6
+    if 'Quat_W' in df.columns:
+        quaternion = df[['Quat_W', 'Quat_X', 'Quat_Y', 'Quat_Z']].values
+        euler = Rotation.from_quat(quaternion).as_euler('xyz', degrees=True)
+        df['Euler_X'] = euler[:, 0]
+        df['Euler_Y'] = euler[:, 1]
+        df['Euler_Z'] = euler[:, 2]
     df = df[[
-#        'Euler_X', 'Euler_Y', 'Euler_Z',
+        'Euler_X', 'Euler_Y', 'Euler_Z',
         'FreeAcc_X', 'FreeAcc_Y', 'FreeAcc_Z',
         'Time_s',
     ]].set_index('Time_s').apply(lambda x: filtfilt(b, a, x), axis=0)
@@ -87,7 +93,7 @@ def load_sensor_csv(filepath) -> pd.DataFrame:
         df[f'Velocity_{axis}'] = filtfilt(b1, a1, df[f'Velocity_{axis}'])
 
     return df[[
-#        'Euler_X', 'Euler_Y', 'Euler_Z',
+        'Euler_X', 'Euler_Y', 'Euler_Z',
         'FreeAcc_X', 'FreeAcc_Y', 'FreeAcc_Z',
         'Velocity_X', 'Velocity_Y', 'Velocity_Z',
     ]]
@@ -160,7 +166,7 @@ for file_path in measurement_dir.rglob("Xsens_DOT_*.csv"):
 
 for trial_name, sensors in sensor_data.items():
     for axis in [
-#        'Euler_X', 'Euler_Y', 'Euler_Z',
+        'Euler_X', 'Euler_Y', 'Euler_Z',
         'FreeAcc_X', 'FreeAcc_Y', 'FreeAcc_Z',
         'Velocity_X', 'Velocity_Y', 'Velocity_Z',
     ]:
