@@ -30,10 +30,10 @@ b, a = butter(
 
 # Sensor colors and labels in the plot
 sensor_colors = {
-    '1': 'blue',
-    '2': 'red',
-    '3': 'green',
-    '4': 'orange',
+    '2': 'blue',
+    '3': 'red',
+    '4': 'green',
+    '5': 'orange',
 }
 sensor_labels = {
     '2': 'Thigh',
@@ -124,10 +124,9 @@ def find_gaps(time_index, max_gap_sec=0.2) -> list[tuple[int, int]]:
     return gaps
 
 
-def detect_kicks_with_peaks(t, acc_y, height=5.0, time=0.5):
+def detect_pushes_with_peaks(t, acc_y, height=5.0, time=0.5):
     peaks, properties = find_peaks(acc_y, height=height, distance=time * fs)
-    kicks = [(t[i], acc_y[i]) for i in peaks]
-    return kicks
+    return [(t[i], acc_y[i]) for i in peaks]
 
 
 sensor_data = {}
@@ -157,6 +156,17 @@ for file_path in measurement_dir.rglob("*.csv"):
         print(f"Error processing {file_path}: {e}")
 
 for trial_name, sensors in sensor_data.items():
+    pushes_inverted = True
+    if '4' not in sensors:
+        print(f"Skipping {trial_name} - no foot sensor")
+        continue
+    t = sensors['4']['data'].index.to_numpy()
+    y = sensors['4']['data']['FreeAcc_Z'].to_numpy()
+    if pushes_inverted:
+        pushes = detect_pushes_with_peaks(t, -1 * y, max(min(y) * -0.33, 2.0))
+    else:
+        pushes = detect_pushes_with_peaks(t, y, max(max(y) * 0.33, 2.0))
+
     for axis in [
         'Euler_X', 'Euler_Y', 'Euler_Z',
         'FreeAcc_X', 'FreeAcc_Y', 'FreeAcc_Z',
@@ -171,6 +181,9 @@ for trial_name, sensors in sensor_data.items():
 
         for ax, (sensor_id, sensor_info) in zip(axs, sorted(sensors.items())):
             data = sensor_info['data']
+            limit_low = max(pushes[0][0] - 2.5, 0)
+            limit_high = min(pushes[-1][0] + 2.5, data.index[-1])
+            data = data[(data.index >= limit_low) & (data.index <= limit_high)]
             # Time axis
             t = data.index.to_numpy()
             # Acceleration axis
@@ -198,20 +211,20 @@ for trial_name, sensors in sensor_data.items():
                 ax.axvspan(gap_start, gap_end, color='red', alpha=0.3)
 
             # Plot pushes in FreeAcc_* except FreeAcc_Total
-            if axis.startswith("FreeAcc_") and axis != "FreeAcc_Total" and len(y) > 0:
-                kicks = detect_kicks_with_peaks(t, y, max(max(y) * 0.33, (0.5 if sensor_id == 4 else 2.0)))
-                for peak_time, peak_value in kicks:
-                    ax.plot(peak_time, peak_value, 'bo', markersize=4)
+            if len(y) > 0:
+                for peak_time, peak_value in pushes:
+                    if axis == "FreeAcc_Z" and sensor_id == 4:
+                        ax.plot(peak_time, (-1 if pushes_inverted else 1) * peak_value, 'bo', markersize=4)
                     # Add a vertical line at the step time
                     ax.axvline(x=peak_time, color='blue', linestyle='--', alpha=0.5)
                     ax.axvspan(peak_time - 0.1, peak_time + 0.1, color='blue', alpha=0.1)
 
-                if axis == "FreeAcc_X":
+                if axis == "FreeAcc_Z":
                     sensors[sensor_id]['axis'] = axis
                     sensors[sensor_id]['max_acc'] = max(y)
-                    sensors[sensor_id]['kick_count'] = len(kicks)
-                    sensors[sensor_id]['duration'] = t[-1] - t[0]
-                    sensors[sensor_id]['kicks'] = kicks
+                    # Duration from the first to the last push
+                    sensors[sensor_id]['duration'] = pushes[-1][0] - pushes[0][0]
+                    sensors[sensor_id]['pushes'] = pushes
 
             unit_label = 'unknown [-]'
             if axis.startswith("FreeAcc_"):
@@ -240,7 +253,15 @@ for trial_name, sensors in sensor_data.items():
 results = []
 for trial_name, sensors in sensor_data.items():
     for sensor_info in sensors.values():
-        pushes = len(sensor_info['kicks'])
+        missing = False
+        for key in ['axis', 'pushes', 'duration', 'max_acc']:
+            if key not in sensor_info:
+                missing = True
+                print(f'Missing {key} in {trial_name}, skipping...')
+                continue
+        if missing:
+            continue
+        pushes = len(sensor_info['pushes'])
         duration = sensor_info['duration']
         cadence = pushes / duration
         max_acc = sensor_info['max_acc']
