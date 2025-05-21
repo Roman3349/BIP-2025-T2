@@ -42,6 +42,12 @@ sensor_labels = {
     '5': 'Skateboard deck',
 }
 
+axes = [
+    'Euler_Y',
+    'FreeAcc_X', 'FreeAcc_Z',
+    'Velocity_X', 'Velocity_Z',
+]
+
 
 def load_sensor_csv(filepath) -> pd.DataFrame:
     """
@@ -134,7 +140,7 @@ def find_gaps(time_index, max_gap_sec=0.2) -> list[tuple[int, int]]:
     return gaps
 
 
-def detect_peaks(time, signal, height=5.0, min_height=2.0, min_time=0.33) -> list[tuple[int, int]]:
+def detect_peaks(time, signal, height=5.0, min_height=2.0, min_time=0.4) -> list[tuple[int, int]]:
     """
     Detects peaks in the signal using the find_peaks function from scipy.
     :param time: Time axis
@@ -149,7 +155,8 @@ def detect_peaks(time, signal, height=5.0, min_height=2.0, min_time=0.33) -> lis
         height *= -1
     else:
         signal_copy = signal.copy()
-    peaks, properties = find_peaks(signal_copy, height=max(height, min_height), distance=min_time * fs)
+    height = max(height, min_height)
+    peaks, properties = find_peaks(signal_copy, height=height, distance=min_time * fs, prominence=2.5 * height)
     return [(time[i], signal_copy[i] * (-1 if height < 0 else 1)) for i in peaks]
 
 def plot_peaks(plot_axis, peaks: list[tuple[int, int]], plot_point: bool, color: str) -> None:
@@ -208,22 +215,27 @@ for trial_name, sensors in sensor_data.items():
     pushes = detect_peaks(
         time=sensor_values.index.to_numpy(),
         signal=sensor_values['FreeAcc_Z'].to_numpy(),
-        height=min(sensor_values['FreeAcc_Z']) * 0.3,
+        height=min(sensor_values['FreeAcc_Z']) * 0.15,
         min_height=2.0,
-    )#[:10]
+    )[1:8]
     # Detect lift off in Euler_Y
     sensor_values = sensors['3']['data']
-    lift_offs = detect_peaks(
+    lift_offs_orig = detect_peaks(
         time=sensor_values.index.to_numpy(),
         signal=sensor_values['Euler_Y'].to_numpy(),
         height=max(sensor_values['Euler_Y']) * 0.3,
-        min_height=10.0,
+        min_height=5.0,
     )
+    lift_offs = []
+    # Remove liftoffs that are before the first push
+    for lift_off_time, lift_off_value in lift_offs_orig:
+        if pushes[0][0] < lift_off_time < pushes[-1][0]:
+            lift_offs.append((lift_off_time, lift_off_value))
 
     for axis in [
-        'Euler_X', 'Euler_Y', 'Euler_Z',
-        'FreeAcc_X', 'FreeAcc_Y', 'FreeAcc_Z',
-        'Velocity_X', 'Velocity_Y', 'Velocity_Z',
+        'Euler_Y',
+        'FreeAcc_X', 'FreeAcc_Z',
+        'Velocity_X', 'Velocity_Z',
     ]:
         print(f"Plotting {trial_name} - {axis}")
         fig, axs = plt.subplots(len(sensors), 1, figsize=(16, 2.5 * len(sensors)), sharex=True)
