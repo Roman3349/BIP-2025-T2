@@ -18,7 +18,7 @@ output_dir.mkdir(exist_ok=True)
 
 # Sampling frequency and Butterworth 4th order filter parameters
 fs = 60
-cutoff = 4
+cutoff = 8
 order = 4
 b, a = butter(
     N=order, # Filter order
@@ -68,7 +68,9 @@ def load_sensor_csv(filepath) -> pd.DataFrame:
     sensor_id = filepath.stem.split('-')[0]
     if sensor_id in ['3', '4']:
         df[['FreeAcc_X', 'FreeAcc_Z']] = df[['FreeAcc_Z', 'FreeAcc_X']].copy()
-
+    side = get_side(filepath.parent.name)
+    if side == 'right':
+        df['Euler_Y'] *= -1
     # Calculate velocity
     for axis in ['X', 'Y', 'Z']:
         df[f'Velocity_{axis}'] = cumulative_trapezoid(df[f'FreeAcc_{axis}'], dx=(1 / fs), initial=0)
@@ -87,6 +89,14 @@ def load_sensor_csv(filepath) -> pd.DataFrame:
         'Velocity_X', 'Velocity_Y', 'Velocity_Z',
     ]]
 
+
+def get_side(folder_name) -> str:
+    trial = folder_name.split('_')[-1]
+    if trial == 'R1' or trial == 'R2':
+        return "right"
+    elif trial == 'L1' or trial == 'L2':
+        return "left"
+    return "unknown"
 
 def get_trial_type(folder_name) -> str:
     """
@@ -135,10 +145,12 @@ def detect_peaks(time, signal, height=5.0, min_height=2.0, min_time=0.33) -> lis
     :return: List of tuples containing the time and value of each detected peak
     """
     if height < 0:
-        signal *= -1
+        signal_copy = signal.copy() * -1
         height *= -1
-    peaks, properties = find_peaks(signal, height=max(height, min_height), distance=min_time * fs)
-    return [(time[i], signal[i] * (-1 if height < 0 else 1)) for i in peaks]
+    else:
+        signal_copy = signal.copy()
+    peaks, properties = find_peaks(signal_copy, height=max(height, min_height), distance=min_time * fs)
+    return [(time[i], signal_copy[i] * (-1 if height < 0 else 1)) for i in peaks]
 
 def plot_peaks(plot_axis, peaks: list[tuple[int, int]], plot_point: bool, color: str) -> None:
     """
@@ -157,6 +169,7 @@ def plot_peaks(plot_axis, peaks: list[tuple[int, int]], plot_point: bool, color:
 
 
 sensor_data = {}
+stats = []
 
 # Iterate through all CSV files in the measurement directory
 for file_path in measurement_dir.rglob("*.csv"):
@@ -175,6 +188,7 @@ for file_path in measurement_dir.rglob("*.csv"):
         sensor_data.setdefault(trial_name, {})[sensor_id] = {
             'data': df,
             'trial_type': trial_type,
+            'side': 'right' if trial_type.startswith('Right') else 'left',
             'label': sensor_labels.get(sensor_id, f"Sensor {sensor_id}"),
             'color': sensor_colors.get(sensor_id, 'black')
         }
@@ -226,7 +240,7 @@ for trial_name, sensors in sensor_data.items():
             # Time axis
             t = data.index.to_numpy()
             # Acceleration axis
-            y = data[axis].to_numpy()
+            y: np.ndarray = data[axis].to_numpy()
 
             # Find gaps in the data
             gaps = find_gaps(data.index)
@@ -254,13 +268,20 @@ for trial_name, sensors in sensor_data.items():
                 plot_peaks(ax, pushes, axis == "FreeAcc_Z" and sensor_id == 4, 'green')
                 plot_peaks(ax, lift_offs, axis == "Euler_Y" and sensor_id == 3, 'red')
 
-                if axis == "FreeAcc_Z":
-                    sensors[sensor_id]['axis'] = axis
-                    sensors[sensor_id]['max_acc'] = max(y)
-                    # Duration from the first to the last push
-                    sensors[sensor_id]['duration'] = pushes[-1][0] - pushes[0][0]
-                    sensors[sensor_id]['pushes'] = pushes
-
+                if axis in ['Euler_Y', 'FreeAcc_X', 'FreeAcc_Z']:
+                    duration = pushes[-1][0] - pushes[0][0]
+                    stats.append({
+                        'trial_name': trial_name,
+                        'label': sensor_info['label'],
+                        'axis': axis,
+                        'min': min(y),
+                        'mean': y.mean(),
+                        'max': max(y),
+                        'duration': duration,
+                        'pushes': len(pushes),
+                        'lift_offs': len(lift_offs),
+                        'cadence': len(pushes) / duration,
+                    })
             unit_label = 'unknown [-]'
             if axis.startswith("FreeAcc_"):
                 unit_label = 'acceleration [m/s²]'
@@ -285,35 +306,7 @@ for trial_name, sensors in sensor_data.items():
         fig.savefig(output_path)
         plt.close(fig)
 
-results = []
-for trial_name, sensors in sensor_data.items():
-    if len(sensors) == 0:
-        print(f"Skipping {trial_name} - no sensors")
-        continue
-    for sensor_info in sensors.values():
-        missing = False
-        for key in ['axis', 'pushes', 'duration', 'max_acc']:
-            if key not in sensor_info:
-                missing = True
-                print(f'Missing {key} in {trial_name}, skipping...')
-                continue
-        if missing:
-            continue
-        pushes = len(sensor_info['pushes'])
-        duration = sensor_info['duration']
-        cadence = pushes / duration
-        max_acc = sensor_info['max_acc']
-
-        results.append({
-            'axis': sensor_info['axis'],
-            'trial_name': trial_name,
-            'pushes': pushes,
-            'duration': duration,
-            'cadence': cadence,
-        })
-        break
-
 with open("stats.csv", 'w', newline='') as f:
-    writer = csv.DictWriter(f, fieldnames=results[0].keys())
+    writer = csv.DictWriter(f, fieldnames=stats[0].keys())
     writer.writeheader()
-    writer.writerows(results)
+    writer.writerows(stats)
