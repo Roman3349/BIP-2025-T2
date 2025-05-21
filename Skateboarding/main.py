@@ -18,7 +18,7 @@ output_dir.mkdir(exist_ok=True)
 
 # Sampling frequency and Butterworth 4th order filter parameters
 fs = 60
-cutoff = 2
+cutoff = 4
 order = 4
 b, a = butter(
     N=order, # Filter order
@@ -124,9 +124,36 @@ def find_gaps(time_index, max_gap_sec=0.2) -> list[tuple[int, int]]:
     return gaps
 
 
-def detect_pushes_with_peaks(t, acc_y, height=5.0, time=0.5):
-    peaks, properties = find_peaks(acc_y, height=height, distance=time * fs)
-    return [(t[i], acc_y[i]) for i in peaks]
+def detect_peaks(time, signal, height=5.0, min_height=2.0, min_time=0.33) -> list[tuple[int, int]]:
+    """
+    Detects peaks in the signal using the find_peaks function from scipy.
+    :param time: Time axis
+    :param signal: Signal data
+    :param height: Minimum height of the peaks
+    :param min_height: Absolute minimum height of the peaks
+    :param min_time: Minimum time between peaks
+    :return: List of tuples containing the time and value of each detected peak
+    """
+    if height < 0:
+        signal *= -1
+        height *= -1
+    peaks, properties = find_peaks(signal, height=max(height, min_height), distance=min_time * fs)
+    return [(time[i], signal[i] * (-1 if height < 0 else 1)) for i in peaks]
+
+def plot_peaks(plot_axis, peaks: list[tuple[int, int]], plot_point: bool, color: str) -> None:
+    """
+    Plot the detected peaks on the given axis.
+    :param plot_axis: Plot axis to draw on
+    :param peaks: List of tuples containing the time and value of each detected peak
+    :param plot_point: Whether to plot the peak points
+    :param color: Color for the peaks
+    """
+    for peak_time, peak_value in peaks:
+        if plot_point:
+            plot_axis.plot(peak_time, peak_value, f'{color[0]}o', markersize=4)
+        # Add a vertical line at the step time
+        plot_axis.axvline(x=peak_time, color=color, linestyle='--', alpha=0.5)
+        plot_axis.axvspan(peak_time - 0.05, peak_time + 0.05, color=color, alpha=0.1)
 
 
 sensor_data = {}
@@ -156,16 +183,28 @@ for file_path in measurement_dir.rglob("*.csv"):
         print(f"Error processing {file_path}: {e}")
 
 for trial_name, sensors in sensor_data.items():
-    pushes_inverted = True
     if '4' not in sensors:
         print(f"Skipping {trial_name} - no foot sensor")
         continue
-    t = sensors['4']['data'].index.to_numpy()
-    y = sensors['4']['data']['FreeAcc_Z'].to_numpy()
-    if pushes_inverted:
-        pushes = detect_pushes_with_peaks(t, -1 * y, max(min(y) * -0.33, 2.0))
-    else:
-        pushes = detect_pushes_with_peaks(t, y, max(max(y) * 0.33, 2.0))
+    if '3' not in sensors:
+        print(f"Skipping {trial_name} - no shank sensor")
+        continue
+    # Detect first 10 pushes in FreeAcc_Z
+    sensor_values = sensors['4']['data']
+    pushes = detect_peaks(
+        time=sensor_values.index.to_numpy(),
+        signal=sensor_values['FreeAcc_Z'].to_numpy(),
+        height=min(sensor_values['FreeAcc_Z']) * 0.33,
+        min_height=2.0,
+    )#[:10]
+    # Detect lift off in Euler_Y
+    sensor_values = sensors['3']['data']
+    lift_offs = detect_peaks(
+        time=sensor_values.index.to_numpy(),
+        signal=sensor_values['Euler_Y'].to_numpy(),
+        height=max(sensor_values['Euler_Y']) * 0.33,
+        min_height=10.0,
+    )
 
     for axis in [
         'Euler_X', 'Euler_Y', 'Euler_Z',
@@ -173,7 +212,9 @@ for trial_name, sensors in sensor_data.items():
         'Velocity_X', 'Velocity_Y', 'Velocity_Z',
     ]:
         print(f"Plotting {trial_name} - {axis}")
-        fig, axs = plt.subplots(len(sensors), 1, figsize=(10, 2.5 * len(sensors)), sharex=True)
+        fig, axs = plt.subplots(len(sensors), 1, figsize=(16, 2.5 * len(sensors)), sharex=True)
+        # Remove pushes after the 10th
+        pushes = pushes[:10]
 
         # If only one sensor, axs is not a list
         if len(sensors) == 1:
@@ -181,8 +222,8 @@ for trial_name, sensors in sensor_data.items():
 
         for ax, (sensor_id, sensor_info) in zip(axs, sorted(sensors.items())):
             data = sensor_info['data']
-            limit_low = max(pushes[0][0] - 2.5, 0)
-            limit_high = min(pushes[-1][0] + 2.5, data.index[-1])
+            limit_low = max(pushes[0][0] - 1.5, 0)
+            limit_high = min(pushes[-1][0] + 1.5, data.index[-1])
             data = data[(data.index >= limit_low) & (data.index <= limit_high)]
             # Time axis
             t = data.index.to_numpy()
@@ -212,12 +253,8 @@ for trial_name, sensors in sensor_data.items():
 
             # Plot pushes in FreeAcc_* except FreeAcc_Total
             if len(y) > 0:
-                for peak_time, peak_value in pushes:
-                    if axis == "FreeAcc_Z" and sensor_id == 4:
-                        ax.plot(peak_time, (-1 if pushes_inverted else 1) * peak_value, 'bo', markersize=4)
-                    # Add a vertical line at the step time
-                    ax.axvline(x=peak_time, color='blue', linestyle='--', alpha=0.5)
-                    ax.axvspan(peak_time - 0.1, peak_time + 0.1, color='blue', alpha=0.1)
+                plot_peaks(ax, pushes, axis == "FreeAcc_Z" and sensor_id == 4, 'green')
+                plot_peaks(ax, lift_offs, axis == "Euler_Y" and sensor_id == 3, 'red')
 
                 if axis == "FreeAcc_Z":
                     sensors[sensor_id]['axis'] = axis
@@ -252,6 +289,9 @@ for trial_name, sensors in sensor_data.items():
 
 results = []
 for trial_name, sensors in sensor_data.items():
+    if len(sensors) == 0:
+        print(f"Skipping {trial_name} - no sensors")
+        continue
     for sensor_info in sensors.values():
         missing = False
         for key in ['axis', 'pushes', 'duration', 'max_acc']:
