@@ -194,7 +194,7 @@ for trial_name, sensors in sensor_data.items():
     pushes = detect_peaks(
         time=sensor_values.index.to_numpy(),
         signal=sensor_values['FreeAcc_Z'].to_numpy(),
-        height=min(sensor_values['FreeAcc_Z']) * 0.33,
+        height=min(sensor_values['FreeAcc_Z']) * 0.3,
         min_height=2.0,
     )#[:10]
     # Detect lift off in Euler_Y
@@ -202,7 +202,7 @@ for trial_name, sensors in sensor_data.items():
     lift_offs = detect_peaks(
         time=sensor_values.index.to_numpy(),
         signal=sensor_values['Euler_Y'].to_numpy(),
-        height=max(sensor_values['Euler_Y']) * 0.33,
+        height=max(sensor_values['Euler_Y']) * 0.3,
         min_height=10.0,
     )
 
@@ -213,8 +213,6 @@ for trial_name, sensors in sensor_data.items():
     ]:
         print(f"Plotting {trial_name} - {axis}")
         fig, axs = plt.subplots(len(sensors), 1, figsize=(16, 2.5 * len(sensors)), sharex=True)
-        # Remove pushes after the 10th
-        pushes = pushes[:10]
 
         # If only one sensor, axs is not a list
         if len(sensors) == 1:
@@ -313,6 +311,7 @@ for trial_name, sensors in sensor_data.items():
             'duration': duration,
             'cadence': cadence,
         })
+        break
 
 with open("stats.csv", 'w', newline='') as f:
     writer = csv.DictWriter(f, fieldnames=results[0].keys())
