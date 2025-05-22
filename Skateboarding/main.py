@@ -384,6 +384,9 @@ for trial_name, sensors in sensor_data.items():
                         'lift_offs': len(lift_offs),
                         'cadence': len(pushes) / duration,
                     })
+
+
+
         # Set the x-axis label for the last subplot
         axs[-1].set_xlabel("Time [s]")
         # Set the title for the entire figure
@@ -409,7 +412,21 @@ for trial_name, sensors in sensor_data.items():
                     'color': sensors[sensor]['color'],
 
                 }
+        ranges = []
 
+        for i in range(len(pushes) - 1):
+            if '3' in sensors:
+                cycle_df = sensors['3']['data'].copy()
+                cycle_time_mask = (cycle_df.index >= pushes[i][0]) & (cycle_df.index <= pushes[i + 1][0])
+                cycle_segment = cycle_df[cycle_time_mask]['Euler_Y']
+                if not cycle_segment.empty:
+                    max_val = cycle_segment.max()
+                    min_val = cycle_segment.min()
+                    ranges.append(max_val - min_val)
+
+        # Pridaj do štatistiky nový stĺpec, ak máme rozsahy
+        if ranges:
+            stats[-1]['Euler_Y_range_avg'] = sum(ranges) / len(ranges)
         # Save the figure to the output directory
         output_path = output_dir / f"{trial_name.replace(' ', '_')}_{axis}.png"
         fig.savefig(output_path)
@@ -467,7 +484,28 @@ for trial_name, sensors in sensor_data.items():
         fig.savefig(output_path)
         plt.close(fig)
 
+# Získaj všetky unikátne kľúče zo štatistík
+all_keys = set()
+for row in stats:
+    all_keys.update(row.keys())
+
+# Usporiadaj ich
+fieldnames = sorted(all_keys)
+
+# Zaokrúhli číselné hodnoty na 4 desatinné miesta
+rounded_stats = []
+for row in stats:
+    rounded_row = {}
+    for key in fieldnames:
+        value = row.get(key, "")
+        if isinstance(value, float):
+            rounded_row[key] = round(value, 4)
+        else:
+            rounded_row[key] = value
+    rounded_stats.append(rounded_row)
+
+# Zapíš CSV
 with open("stats.csv", 'w', newline='') as f:
-    writer = csv.DictWriter(f, fieldnames=stats[0].keys())
+    writer = csv.DictWriter(f, fieldnames=fieldnames)
     writer.writeheader()
-    writer.writerows(stats)
+    writer.writerows(rounded_stats)
