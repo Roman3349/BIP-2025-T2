@@ -413,10 +413,10 @@ for trial_name, sensors in sensor_data.items():
                 }
         ranges = []
 
-        for i in range(len(pushes) - 1):
+        for i in range(len(groud_impacts) - 1):
             if '3' in sensors:
                 cycle_df = sensors['3']['data'].copy()
-                cycle_time_mask = (cycle_df.index >= pushes[i][0]) & (cycle_df.index <= pushes[i + 1][0])
+                cycle_time_mask = (cycle_df.index >= groud_impacts[i][0]) & (cycle_df.index <= groud_impacts[i + 1][0])
                 cycle_segment = cycle_df[cycle_time_mask]['Euler_Y']
                 if not cycle_segment.empty:
                     max_val = cycle_segment.max()
