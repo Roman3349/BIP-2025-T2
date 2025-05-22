@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
 from scipy.integrate import cumulative_trapezoid
 from scipy.signal import butter, filtfilt, find_peaks
 
@@ -18,7 +19,7 @@ output_dir.mkdir(exist_ok=True)
 
 # Sampling frequency and Butterworth 4th order filter parameters
 fs = 60
-cutoff = 8
+cutoff = 12
 order = 4
 b, a = butter(
     N=order, # Filter order
@@ -72,11 +73,11 @@ def load_sensor_csv(filepath) -> pd.DataFrame:
     ]].set_index('Time_s').apply(lambda x: filtfilt(b, a, x), axis=0)
     # Fix axes
     sensor_id = filepath.stem.split('-')[0]
-    if sensor_id in ['3', '4']:
-        df[['FreeAcc_X', 'FreeAcc_Z']] = df[['FreeAcc_Z', 'FreeAcc_X']].copy()
-    side = get_side(filepath.parent.name)
-    if side == 'right':
+    if sensor_id == '3':
         df['Euler_Y'] *= -1
+    subject_id = filepath.parent.parent.name.split('-')[0].strip()
+    if subject_id in ['S03', 'S04', 'S06']:
+        df['FreeAcc_X'] *= -1
     # Calculate velocity
     for axis in ['X', 'Y', 'Z']:
         df[f'Velocity_{axis}'] = cumulative_trapezoid(df[f'FreeAcc_{axis}'], dx=(1 / fs), initial=0)
@@ -140,7 +141,7 @@ def find_gaps(time_index, max_gap_sec=0.2) -> list[tuple[int, int]]:
     return gaps
 
 
-def detect_peaks(time, signal, height=5.0, min_height=2.0, min_time=0.4) -> list[tuple[int, int]]:
+def detect_peaks(time, signal, height=5.0, min_height=2.0, min_time=None) -> list[tuple[int, int]]:
     """
     Detects peaks in the signal using the find_peaks function from scipy.
     :param time: Time axis
@@ -156,7 +157,7 @@ def detect_peaks(time, signal, height=5.0, min_height=2.0, min_time=0.4) -> list
     else:
         signal_copy = signal.copy()
     height = max(height, min_height)
-    peaks, properties = find_peaks(signal_copy, height=height, distance=min_time * fs, prominence=2.5 * height)
+    peaks, properties = find_peaks(signal_copy, height=height, distance=min_time * fs if min_time is not None else None)
     return [(time[i], signal_copy[i] * (-1 if height < 0 else 1)) for i in peaks]
 
 def plot_peaks(plot_axis, peaks: list[tuple[int, int]], plot_point: bool, color: str) -> None:
@@ -185,8 +186,8 @@ def plot_variable(ax, sensor_id: str, sensor_info: dict, axis: str, with_croppin
     """
     data = sensor_info['data']
     if with_cropping:
-        limit_low = max(pushes[0][0] - 0.25, 0)
-        limit_high = min(pushes[-1][0] + 0.25, data.index[-1])
+        limit_low = max(pushes[0][0] - 1, 0)
+        limit_high = min(pushes[-1][0] + 0.5, data.index[-1])
         data = data[(data.index >= limit_low) & (data.index <= limit_high)]
     # Time axis
     t = data.index.to_numpy()
@@ -270,22 +271,34 @@ for trial_name, sensors in sensor_data.items():
     sensor_values = sensors['4']['data']
     pushes = detect_peaks(
         time=sensor_values.index.to_numpy(),
-        signal=sensor_values['FreeAcc_Z'].to_numpy(),
-        height=min(sensor_values['FreeAcc_Z']) * 0.15,
+        signal=sensor_values['FreeAcc_X'].to_numpy(),
+        height=max(sensor_values['FreeAcc_X']) * 0.2,
         min_height=2.0,
+        min_time=0.5,
     )[2:8]
     # Detect lift off in Euler_Y
     sensor_values = sensors['3']['data']
-    lift_offs_orig = detect_peaks(
+    angle_peaks_neg = detect_peaks(
         time=sensor_values.index.to_numpy(),
         signal=sensor_values['Euler_Y'].to_numpy(),
-        height=max(sensor_values['Euler_Y']) * 0.3,
-        min_height=5.0,
+        height=min(sensor_values['Euler_Y']) * 0.25,
+        min_height=4,
+        min_time=0.5,
+    )
+    angle_peaks_pos = detect_peaks(
+        time=sensor_values.index.to_numpy(),
+        signal=sensor_values['Euler_Y'].to_numpy(),
+        height=max(sensor_values['Euler_Y']) * 0.25,
+        min_height=4,
+        min_time=0.05,
     )
     lift_offs = []
     # Remove liftoffs that are before the first push
-    for lift_off_time, lift_off_value in lift_offs_orig:
-        if pushes[0][0] < lift_off_time < pushes[-1][0]:
+    for lift_off_time, lift_off_value in angle_peaks_neg:
+        if pushes[0][0] - 1 < lift_off_time < pushes[-1][0]:
+            lift_offs.append((lift_off_time, lift_off_value))
+    for lift_off_time, lift_off_value in angle_peaks_pos:
+        if pushes[0][0] - 1 < lift_off_time < pushes[-1][0]:
             lift_offs.append((lift_off_time, lift_off_value))
 
     for axis in [
@@ -349,6 +362,35 @@ for trial_name, sensors in sensor_data.items():
         fig.savefig(output_path)
         plt.close(fig)
 
+        if axis != 'Euler_Y':
+            continue
+
+        fig, axs = plt.subplots(4, 1, figsize=(25, 10), sharex=True)
+
+        plot_variable(axs[0], '3', sensors['3'], 'Euler_Y')
+        plot_variable(axs[1], '4', sensors['4'], 'FreeAcc_X')
+        plot_variable(axs[2], '4', sensors['4'], 'FreeAcc_Z')
+        plot_variable(axs[3], '5', sensors['5'], 'FreeAcc_X')
+        #plot_variable(axs[3], '5', sensors['5'], 'Velocity_X')
+        # Set the x-axis label for the last subplot
+        axs[-1].set_xlabel("Time [s]")
+        # Adjust the layout to prevent overlap
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        for ax in axs:
+            ax.xaxis.set_major_locator(MultipleLocator(0.5))
+            ax.xaxis.set_minor_locator(MultipleLocator(0.1))
+            ax.grid(True)
+            ax.grid(which='minor', linestyle=':', linewidth=0.5)
+
+        # for ax in axs:
+        #     ax.axvspan(pushes[0][0], lift_offs[0][0], color='green', alpha=0.1)
+        #     ax.axvspan(lift_offs[0][0], pushes[1][0], color='red', alpha=0.1)
+
+        # Save the figure to the output directory
+        output_path = output_dir / f"{trial_name.replace(' ', '_')}_all.png"
+        fig.savefig(output_path)
+        plt.close(fig)
+
         fig, axs = plt.subplots(4, 1, figsize=(16, 10), sharex=True)
 
         for cycle in cycles.values():
@@ -366,7 +408,7 @@ for trial_name, sensors in sensor_data.items():
         #     ax.axvspan(lift_offs[0][0], pushes[1][0], color='red', alpha=0.1)
 
         # Save the figure to the output directory
-        output_path = output_dir / f"{trial_name.replace(' ', '_')}_all.png"
+        output_path = output_dir / f"{trial_name.replace(' ', '_')}_cycle.png"
         fig.savefig(output_path)
         plt.close(fig)
 
