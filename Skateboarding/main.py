@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 from matplotlib.ticker import MultipleLocator
 from scipy.integrate import cumulative_trapezoid
 from scipy.signal import butter, filtfilt, find_peaks
@@ -232,6 +233,58 @@ def plot_variable(ax, sensor_id: str, sensor_info: dict, axis: str, with_croppin
     # Show grid for better readability
     ax.grid(True)
 
+def plot_cycles(cycles: dict) -> None:
+    fig, axs = plt.subplots(4, 1, figsize=(16, 10), sharex=True)
+
+    shank_angle_y: list[pd.DataFrame] = []
+    foot_acceleration_x: list[pd.DataFrame] = []
+    foot_acceleration_z: list[pd.DataFrame] = []
+    skateboard_acceleration_x: list[pd.DataFrame] = []
+
+    for cycle in cycles.values():
+        new_time = np.linspace(0, 1, fs)
+        shank_angle_y.append(pd.DataFrame({
+            'time': new_time,
+            'value': np.interp(new_time, cycle['3']['data'].index, cycle['3']['data']['Euler_Y']),
+        }))
+        foot_acceleration_x.append(pd.DataFrame({
+            'time': new_time,
+            'value': np.interp(new_time, cycle['4']['data'].index, cycle['4']['data']['FreeAcc_X']),
+        }))
+        foot_acceleration_z.append(pd.DataFrame({
+            'time': new_time,
+            'value': np.interp(new_time, cycle['4']['data'].index, cycle['4']['data']['FreeAcc_Z']),
+        }))
+        skateboard_acceleration_x.append(pd.DataFrame({
+            'time': new_time,
+            'value': np.interp(new_time, cycle['5']['data'].index, cycle['5']['data']['FreeAcc_X']),
+        }))
+    sns.lineplot(ax=axs[0], data=pd.concat(shank_angle_y, ignore_index=True), x='time', y='value', errorbar='sd', color='red')
+    sns.lineplot(ax=axs[1], data=pd.concat(foot_acceleration_x, ignore_index=True), x='time', y='value', errorbar='sd', color='green')
+    sns.lineplot(ax=axs[2], data=pd.concat(foot_acceleration_z, ignore_index=True), x='time', y='value', errorbar='sd', color='blue')
+    sns.lineplot(ax=axs[3], data=pd.concat(skateboard_acceleration_x, ignore_index=True), x='time', y='value', errorbar='sd', color='orange')
+    axs[0].set_ylabel("Shank Y\neuler angle [°]", fontsize=10)
+    axs[1].set_ylabel("Foot X\nacceleration [m/s²]", fontsize=10)
+    axs[2].set_ylabel("Foot Z\nacceleration [m/s²]", fontsize=10)
+    axs[3].set_ylabel("Skateboard X\nacceleration [m/s²]", fontsize=10)
+    # Set the x-axis label for the last subplot
+    axs[-1].set_xlabel("Normalized time [-]")
+    for ax in axs:
+        ax.grid(True, which='both', axis='both')
+        ax.set_xticks(np.arange(0, 1.01, 0.1))
+        ax.grid(which='major', linestyle='--', linewidth=0.5, color='gray')
+    fig.suptitle(trial_name, fontsize=16)
+    # Adjust the layout to prevent overlap
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+
+    # for ax in axs:
+    #     ax.axvspan(pushes[0][0], lift_offs[0][0], color='green', alpha=0.1)
+    #     ax.axvspan(lift_offs[0][0], pushes[1][0], color='red', alpha=0.1)
+
+    # Save the figure to the output directory
+    output_path = output_dir / f"{trial_name.replace(' ', '_')}_cycle.png"
+    fig.savefig(output_path)
+
 sensor_data = {}
 stats = []
 
@@ -391,6 +444,8 @@ for trial_name, sensors in sensor_data.items():
         fig.savefig(output_path)
         plt.close(fig)
 
+        plot_cycles(cycles)
+
         fig, axs = plt.subplots(4, 1, figsize=(16, 10), sharex=True)
 
         for cycle in cycles.values():
@@ -408,7 +463,7 @@ for trial_name, sensors in sensor_data.items():
         #     ax.axvspan(lift_offs[0][0], pushes[1][0], color='red', alpha=0.1)
 
         # Save the figure to the output directory
-        output_path = output_dir / f"{trial_name.replace(' ', '_')}_cycle.png"
+        output_path = output_dir / f"{trial_name.replace(' ', '_')}_cycles.png"
         fig.savefig(output_path)
         plt.close(fig)
 
