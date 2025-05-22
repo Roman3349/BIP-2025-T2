@@ -172,8 +172,64 @@ def plot_peaks(plot_axis, peaks: list[tuple[int, int]], plot_point: bool, color:
             plot_axis.plot(peak_time, peak_value, f'{color[0]}o', markersize=4)
         # Add a vertical line at the step time
         plot_axis.axvline(x=peak_time, color=color, linestyle='--', alpha=0.5)
-        plot_axis.axvspan(peak_time - 0.05, peak_time + 0.05, color=color, alpha=0.1)
+        #plot_axis.axvspan(peak_time - 0.05, peak_time + 0.05, color=color, alpha=0.1)
 
+
+def plot_variable(ax, sensor_id: str, sensor_info: dict, axis: str, with_cropping: bool = True) -> None:
+    """
+    Plot the specified variable on the given axis.
+    :param ax: Axis to plot on
+    :param sensor_id: Sensor ID
+    :param sensor_info: Dictionary containing sensor information
+    :param axis: Variable to plot
+    """
+    data = sensor_info['data']
+    if with_cropping:
+        limit_low = max(pushes[0][0] - 0.25, 0)
+        limit_high = min(pushes[-1][0] + 0.25, data.index[-1])
+        data = data[(data.index >= limit_low) & (data.index <= limit_high)]
+    # Time axis
+    t = data.index.to_numpy()
+    # Axis
+    y: np.ndarray = data[axis].to_numpy()
+
+    # Find gaps in the data
+    gaps = find_gaps(data.index)
+
+    # Split the data into segments based on gaps
+    segments = []
+    last_idx = 0
+    for gap_start, gap_end in gaps:
+        split_idx = (t > gap_start)[0:].argmax()
+        segments.append((t[last_idx:split_idx], y[last_idx:split_idx]))
+        last_idx = split_idx
+        print(f"Gap found: {gap_start} to {gap_end}, trial {trial_name}, sensor {sensor_id}")
+    segments.append((t[last_idx:], y[last_idx:]))
+
+    # Plot the segments
+    for t_seg, y_seg in segments:
+        if len(t_seg) == len(y_seg) and len(t_seg) > 1:
+            ax.plot(t_seg, y_seg, color=sensor_info['color'])
+    # Plot the gaps
+    for gap_start, gap_end in gaps:
+        ax.axvspan(gap_start, gap_end, color='red', alpha=0.3)
+
+    # Plot pushes in FreeAcc_* except FreeAcc_Total
+    if len(y) > 0 and with_cropping:
+        plot_peaks(ax, pushes, axis == "FreeAcc_Z" and sensor_id == 4, 'green')
+        plot_peaks(ax, lift_offs, axis == "Euler_Y" and sensor_id == 3, 'red')
+
+    unit_label = 'unknown [-]'
+    if axis.startswith("FreeAcc_"):
+        unit_label = 'acceleration [m/s²]'
+    elif axis.startswith("Velocity_"):
+        unit_label = 'velocity [m/s]'
+    elif axis.startswith("Euler_"):
+        unit_label = 'euler angle [°]'
+    # Set the title and labels for each subplot
+    ax.set_ylabel(sensor_info['label'] + "\n" + unit_label, fontsize=10)
+    # Show grid for better readability
+    ax.grid(True)
 
 sensor_data = {}
 stats = []
@@ -217,7 +273,7 @@ for trial_name, sensors in sensor_data.items():
         signal=sensor_values['FreeAcc_Z'].to_numpy(),
         height=min(sensor_values['FreeAcc_Z']) * 0.15,
         min_height=2.0,
-    )[1:8]
+    )[2:8]
     # Detect lift off in Euler_Y
     sensor_values = sensors['3']['data']
     lift_offs_orig = detect_peaks(
@@ -245,41 +301,9 @@ for trial_name, sensors in sensor_data.items():
             axs = [axs]
 
         for ax, (sensor_id, sensor_info) in zip(axs, sorted(sensors.items())):
-            data = sensor_info['data']
-            limit_low = max(pushes[0][0] - 1.5, 0)
-            limit_high = min(pushes[-1][0] + 1.5, data.index[-1])
-            data = data[(data.index >= limit_low) & (data.index <= limit_high)]
-            # Time axis
-            t = data.index.to_numpy()
-            # Acceleration axis
-            y: np.ndarray = data[axis].to_numpy()
-
-            # Find gaps in the data
-            gaps = find_gaps(data.index)
-
-            # Split the data into segments based on gaps
-            segments = []
-            last_idx = 0
-            for gap_start, gap_end in gaps:
-                split_idx = (t > gap_start)[0:].argmax()
-                segments.append((t[last_idx:split_idx], y[last_idx:split_idx]))
-                last_idx = split_idx
-                print(f"Gap found: {gap_start} to {gap_end}, trial {trial_name}, sensor {sensor_id}")
-            segments.append((t[last_idx:], y[last_idx:]))
-
-            # Plot the segments
-            for t_seg, y_seg in segments:
-                if len(t_seg) == len(y_seg) and len(t_seg) > 1:
-                    ax.plot(t_seg, y_seg, color=sensor_info['color'])
-            # Plot the gaps
-            for gap_start, gap_end in gaps:
-                ax.axvspan(gap_start, gap_end, color='red', alpha=0.3)
-
-            # Plot pushes in FreeAcc_* except FreeAcc_Total
+            y = sensor_info['data'][axis]
+            plot_variable(ax, sensor_id, sensor_info, axis)
             if len(y) > 0:
-                plot_peaks(ax, pushes, axis == "FreeAcc_Z" and sensor_id == 4, 'green')
-                plot_peaks(ax, lift_offs, axis == "Euler_Y" and sensor_id == 3, 'red')
-
                 if axis in ['Euler_Y', 'FreeAcc_X', 'FreeAcc_Z']:
                     duration = pushes[-1][0] - pushes[0][0]
                     stats.append({
@@ -294,18 +318,6 @@ for trial_name, sensors in sensor_data.items():
                         'lift_offs': len(lift_offs),
                         'cadence': len(pushes) / duration,
                     })
-            unit_label = 'unknown [-]'
-            if axis.startswith("FreeAcc_"):
-                unit_label = 'acceleration [m/s²]'
-            elif axis.startswith("Velocity_"):
-                unit_label = 'velocity [m/s]'
-            elif axis.startswith("Euler_"):
-                unit_label = 'euler angle [°]'
-            # Set the title and labels for each subplot
-            ax.set_ylabel(sensor_info['label'] + "\n" + unit_label, fontsize=10)
-            # Show grid for better readability
-            ax.grid(True)
-
         # Set the x-axis label for the last subplot
         axs[-1].set_xlabel("Time [s]")
         # Set the title for the entire figure
@@ -313,8 +325,48 @@ for trial_name, sensors in sensor_data.items():
         # Adjust the layout to prevent overlap
         fig.tight_layout(rect=(0, 0, 1, 0.95))
 
+        cycles = {}
+        for i in range(len(pushes) - 1):
+            for sensor in sensors.keys():
+                cycle_df = sensors[sensor]['data'].copy()
+                cycle_time_mask = (cycle_df.index >= pushes[i][0]) & (cycle_df.index <= pushes[i + 1][0])
+                cycle_df = cycle_df[cycle_time_mask]
+                # Normalize time to interval 0-1
+                cycle_df.index = (cycle_df.index - pushes[i][0]) / (pushes[i+1][0] - pushes[i][0])
+                if i not in cycles:
+                    cycles[i] = {}
+                cycles[i][sensor] = {
+                    'data': cycle_df,
+                    'trial_type': sensors[sensor]['trial_type'],
+                    'side': sensors[sensor]['side'],
+                    'label': sensors[sensor]['label'],
+                    'color': sensors[sensor]['color'],
+
+                }
+
         # Save the figure to the output directory
         output_path = output_dir / f"{trial_name.replace(' ', '_')}_{axis}.png"
+        fig.savefig(output_path)
+        plt.close(fig)
+
+        fig, axs = plt.subplots(4, 1, figsize=(16, 10), sharex=True)
+
+        for cycle in cycles.values():
+            plot_variable(axs[0], '3', cycle['3'], 'Euler_Y', False)
+            plot_variable(axs[1], '4', cycle['4'], 'FreeAcc_Z', False)
+            plot_variable(axs[2], '5', cycle['5'], 'FreeAcc_X', False)
+            plot_variable(axs[3], '5', cycle['5'], 'Velocity_X', False)
+            # Set the x-axis label for the last subplot
+            axs[-1].set_xlabel("Time [s]")
+            # Adjust the layout to prevent overlap
+            fig.tight_layout(rect=(0, 0, 1, 0.95))
+
+        # for ax in axs:
+        #     ax.axvspan(pushes[0][0], lift_offs[0][0], color='green', alpha=0.1)
+        #     ax.axvspan(lift_offs[0][0], pushes[1][0], color='red', alpha=0.1)
+
+        # Save the figure to the output directory
+        output_path = output_dir / f"{trial_name.replace(' ', '_')}_all.png"
         fig.savefig(output_path)
         plt.close(fig)
 
