@@ -84,7 +84,7 @@ def load_sensor_csv(filepath) -> pd.DataFrame:
         df[f'Velocity_{axis}'] = cumulative_trapezoid(df[f'FreeAcc_{axis}'], dx=(1 / fs), initial=0)
         b1, a1 = butter(
             N=order,  # Filter order
-            Wn=0.25 / (0.5 * fs),  # Nyquist (normalized) frequency
+            Wn=0.1 / (0.5 * fs),  # Nyquist (normalized) frequency
             btype='high',  # High-pass filter
             analog=False,  # Digital filter
             output='ba',  # Output type - numerator and denominator
@@ -187,8 +187,8 @@ def plot_variable(ax, sensor_id: str, sensor_info: dict, axis: str, with_croppin
     """
     data = sensor_info['data']
     if with_cropping:
-        limit_low = max(pushes[0][0] - 1, 0)
-        limit_high = min(pushes[-1][0] + 0.5, data.index[-1])
+        limit_low = max(groud_impacts[0][0] - 1, 0)
+        limit_high = min(groud_impacts[-1][0] + 0.5, data.index[-1])
         data = data[(data.index >= limit_low) & (data.index <= limit_high)]
     # Time axis
     t = data.index.to_numpy()
@@ -218,7 +218,7 @@ def plot_variable(ax, sensor_id: str, sensor_info: dict, axis: str, with_croppin
 
     # Plot pushes in FreeAcc_* except FreeAcc_Total
     if len(y) > 0 and with_cropping:
-        plot_peaks(ax, pushes, axis == "FreeAcc_Z" and sensor_id == 4, 'green')
+        plot_peaks(ax, groud_impacts, axis == "FreeAcc_Z" and sensor_id == 4, 'green')
         plot_peaks(ax, lift_offs, axis == "Euler_Y" and sensor_id == 3, 'red')
 
     unit_label = 'unknown [-]'
@@ -234,7 +234,7 @@ def plot_variable(ax, sensor_id: str, sensor_info: dict, axis: str, with_croppin
     ax.grid(True)
 
 def plot_cycles(cycles: dict) -> None:
-    fig, axs = plt.subplots(4, 1, figsize=(16, 10), sharex=True)
+    fig, axs = plt.subplots(4, 1, figsize=(16, 9), sharex=True)
 
     shank_angle_y: list[pd.DataFrame] = []
     foot_acceleration_x: list[pd.DataFrame] = []
@@ -259,6 +259,17 @@ def plot_cycles(cycles: dict) -> None:
             'time': new_time,
             'value': np.interp(new_time, cycle['5']['data'].index, cycle['5']['data']['FreeAcc_X']),
         }))
+    # Calculate mean of foot's FreeAcc_X
+    foot_acceleration_x_concat = pd.concat(foot_acceleration_x, ignore_index=True)
+    foot_acceleration_x_mean = foot_acceleration_x_concat.groupby('time').mean().reset_index()
+    # Find one maximum peak and max peak location in mean foot's FreeAcc_X using find_peaks
+    foot_acceleration_x_peak, peak_props = find_peaks(foot_acceleration_x_mean['value'])
+    # Find the absolute maximum peak in foot's FreeAcc_X
+    max_foot_acc_x_peak = None
+    for i in foot_acceleration_x_peak:
+        if max_foot_acc_x_peak is None or foot_acceleration_x_mean['value'][i] > foot_acceleration_x_mean['value'][max_foot_acc_x_peak]:
+            max_foot_acc_x_peak = i
+    max_foot_acc_x_peak = foot_acceleration_x_mean['time'][max_foot_acc_x_peak]
     sns.lineplot(ax=axs[0], data=pd.concat(shank_angle_y, ignore_index=True), x='time', y='value', errorbar='sd', color='red')
     sns.lineplot(ax=axs[1], data=pd.concat(foot_acceleration_x, ignore_index=True), x='time', y='value', errorbar='sd', color='green')
     sns.lineplot(ax=axs[2], data=pd.concat(foot_acceleration_z, ignore_index=True), x='time', y='value', errorbar='sd', color='blue')
@@ -277,9 +288,9 @@ def plot_cycles(cycles: dict) -> None:
     # Adjust the layout to prevent overlap
     fig.tight_layout(rect=(0, 0, 1, 0.95))
 
-    # for ax in axs:
-    #     ax.axvspan(pushes[0][0], lift_offs[0][0], color='green', alpha=0.1)
-    #     ax.axvspan(lift_offs[0][0], pushes[1][0], color='red', alpha=0.1)
+    for ax in axs:
+         ax.axvspan(0, max_foot_acc_x_peak, color='green', alpha=0.1)
+         ax.axvspan(max_foot_acc_x_peak, 1, color='red', alpha=0.1)
 
     # Save the figure to the output directory
     output_path = output_dir / f"{trial_name.replace(' ', '_')}_cycle.png"
@@ -320,39 +331,27 @@ for trial_name, sensors in sensor_data.items():
     if '3' not in sensors:
         print(f"Skipping {trial_name} - no shank sensor")
         continue
-    # Detect first 10 pushes in FreeAcc_Z
+    # Detect ground impacts in FreeAcc_Z
     sensor_values = sensors['4']['data']
-    pushes = detect_peaks(
+    groud_impacts = detect_peaks(
+        time=sensor_values.index.to_numpy(),
+        signal=sensor_values['FreeAcc_X'].to_numpy(),
+        height=min(sensor_values['FreeAcc_X']) * 0.2,
+        min_height=2.0,
+        min_time=0.5,
+    )[2:8]
+    # Detect lift offs in FreeAcc_X
+    lift_offs = detect_peaks(
         time=sensor_values.index.to_numpy(),
         signal=sensor_values['FreeAcc_X'].to_numpy(),
         height=max(sensor_values['FreeAcc_X']) * 0.2,
         min_height=2.0,
         min_time=0.5,
     )[2:8]
-    # Detect lift off in Euler_Y
-    sensor_values = sensors['3']['data']
-    angle_peaks_neg = detect_peaks(
-        time=sensor_values.index.to_numpy(),
-        signal=sensor_values['Euler_Y'].to_numpy(),
-        height=min(sensor_values['Euler_Y']) * 0.25,
-        min_height=4,
-        min_time=0.5,
-    )
-    angle_peaks_pos = detect_peaks(
-        time=sensor_values.index.to_numpy(),
-        signal=sensor_values['Euler_Y'].to_numpy(),
-        height=max(sensor_values['Euler_Y']) * 0.25,
-        min_height=4,
-        min_time=0.05,
-    )
-    lift_offs = []
     # Remove liftoffs that are before the first push
-    for lift_off_time, lift_off_value in angle_peaks_neg:
-        if pushes[0][0] - 1 < lift_off_time < pushes[-1][0]:
-            lift_offs.append((lift_off_time, lift_off_value))
-    for lift_off_time, lift_off_value in angle_peaks_pos:
-        if pushes[0][0] - 1 < lift_off_time < pushes[-1][0]:
-            lift_offs.append((lift_off_time, lift_off_value))
+    for lift_off_time, lift_off_value in lift_offs:
+        if not (groud_impacts[0][0] < lift_off_time < groud_impacts[-1][0]):
+            lift_offs.remove((lift_off_time, lift_off_value))
 
     for axis in [
         'Euler_Y',
@@ -371,7 +370,7 @@ for trial_name, sensors in sensor_data.items():
             plot_variable(ax, sensor_id, sensor_info, axis)
             if len(y) > 0:
                 if axis in ['Euler_Y', 'FreeAcc_X', 'FreeAcc_Z']:
-                    duration = pushes[-1][0] - pushes[0][0]
+                    duration = groud_impacts[-1][0] - groud_impacts[0][0]
                     stats.append({
                         'trial_name': trial_name,
                         'label': sensor_info['label'],
@@ -380,9 +379,9 @@ for trial_name, sensors in sensor_data.items():
                         'mean': y.mean(),
                         'max': max(y),
                         'duration': duration,
-                        'pushes': len(pushes),
+                        'pushes': len(groud_impacts),
                         'lift_offs': len(lift_offs),
-                        'cadence': len(pushes) / duration,
+                        'cadence': len(groud_impacts) / duration,
                     })
         # Set the x-axis label for the last subplot
         axs[-1].set_xlabel("Time [s]")
@@ -392,13 +391,13 @@ for trial_name, sensors in sensor_data.items():
         fig.tight_layout(rect=(0, 0, 1, 0.95))
 
         cycles = {}
-        for i in range(len(pushes) - 1):
+        for i in range(len(groud_impacts) - 1):
             for sensor in sensors.keys():
                 cycle_df = sensors[sensor]['data'].copy()
-                cycle_time_mask = (cycle_df.index >= pushes[i][0]) & (cycle_df.index <= pushes[i + 1][0])
+                cycle_time_mask = (cycle_df.index >= groud_impacts[i][0]) & (cycle_df.index <= groud_impacts[i + 1][0])
                 cycle_df = cycle_df[cycle_time_mask]
                 # Normalize time to interval 0-1
-                cycle_df.index = (cycle_df.index - pushes[i][0]) / (pushes[i+1][0] - pushes[i][0])
+                cycle_df.index = (cycle_df.index - groud_impacts[i][0]) / (groud_impacts[i + 1][0] - groud_impacts[i][0])
                 if i not in cycles:
                     cycles[i] = {}
                 cycles[i][sensor] = {
