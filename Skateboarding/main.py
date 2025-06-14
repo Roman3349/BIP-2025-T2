@@ -1,6 +1,7 @@
 import csv
 import os
 from pathlib import Path
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -50,6 +51,29 @@ axes = [
     'Velocity_X', 'Velocity_Z',
 ]
 
+bad_cycles: Dict[str, Dict[str, List[int]]] = {
+    'S02': {
+        'Left leg #2': [5],
+    },
+    'S03': {
+        'Left leg #1': [5],
+        'Right leg #1': [4],
+    },
+    'S04': {
+        'Left leg #1': [5],
+    },
+    'S05': {
+        'Left leg #1': [3],
+        'Right leg #2': [5],
+    },
+    'S06': {
+        'Left leg #2': [5],
+    },
+}
+
+subject_info: pd.DataFrame = pd.read_csv(Path('subjects.csv'), sep=',', index_col=0)
+trial_stats: pd.DataFrame = pd.DataFrame(columns=['Subject', 'Trial', 'Duration', 'Cadence', 'Shank_Euler_Y_range', 'Foot_FreeAcc_X_range', 'Foot_FreeAcc_Z_range', 'Skateboard_FreeAcc_X_range', 'Pushes', 'Lift_offs'])
+results: pd.DataFrame = subject_info.copy()
 
 def load_sensor_csv(filepath) -> pd.DataFrame:
     """
@@ -74,17 +98,22 @@ def load_sensor_csv(filepath) -> pd.DataFrame:
     ]].set_index('Time_s').apply(lambda x: filtfilt(b, a, x), axis=0)
     # Fix axes
     sensor_id = filepath.stem.split('-')[0]
+    side = get_side(filepath.parent.name)
     if sensor_id == '3':
         df['Euler_Y'] *= -1
     subject_id = filepath.parent.parent.name.split('-')[0].strip()
-    if subject_id in ['S03', 'S04', 'S06']:
+    if (
+        (subject_id in ['S03', 'S04', 'S06'] and sensor_id == '5') or
+        (subject_id in ['S01', 'S02', 'S03', 'S04', 'S05'] and sensor_id == '4' and side == 'right') or
+        (subject_id == 'S06' and sensor_id == '4' and side == 'left')
+    ):
         df['FreeAcc_X'] *= -1
     # Calculate velocity
     for axis in ['X', 'Y', 'Z']:
         df[f'Velocity_{axis}'] = cumulative_trapezoid(df[f'FreeAcc_{axis}'], dx=(1 / fs), initial=0)
         b1, a1 = butter(
             N=order,  # Filter order
-            Wn=0.1 / (0.5 * fs),  # Nyquist (normalized) frequency
+            Wn=0.05 / (0.5 * fs),  # Nyquist (normalized) frequency
             btype='high',  # High-pass filter
             analog=False,  # Digital filter
             output='ba',  # Output type - numerator and denominator
@@ -99,6 +128,11 @@ def load_sensor_csv(filepath) -> pd.DataFrame:
 
 
 def get_side(folder_name) -> str:
+    """
+    Determine the side (left or right) based on the folder name.
+    :param folder_name: Name of the folder containing the trial data
+    :return: String representing the side ('left' or 'right' or 'unknown')
+    """
     trial = folder_name.split('_')[-1]
     if trial == 'R1' or trial == 'R2':
         return "right"
@@ -177,7 +211,7 @@ def plot_peaks(plot_axis, peaks: list[tuple[int, int]], plot_point: bool, color:
         #plot_axis.axvspan(peak_time - 0.05, peak_time + 0.05, color=color, alpha=0.1)
 
 
-def plot_variable(ax, sensor_id: str, sensor_info: dict, axis: str, with_cropping: bool = True) -> None:
+def plot_variable(ax, sensor_id: str, sensor_info: dict, axis: str, with_cropping: bool = True, cycle_id: Optional[int] = None) -> None:
     """
     Plot the specified variable on the given axis.
     :param ax: Axis to plot on
@@ -211,7 +245,10 @@ def plot_variable(ax, sensor_id: str, sensor_info: dict, axis: str, with_croppin
     # Plot the segments
     for t_seg, y_seg in segments:
         if len(t_seg) == len(y_seg) and len(t_seg) > 1:
-            ax.plot(t_seg, y_seg, color=sensor_info['color'])
+            if cycle_id is None:
+                ax.plot(t_seg, y_seg, color=sensor_info['color'])
+            else:
+                ax.plot(t_seg, y_seg, label=f"Cycle #{cycle_id}")
     # Plot the gaps
     for gap_start, gap_end in gaps:
         ax.axvspan(gap_start, gap_end, color='red', alpha=0.3)
@@ -232,6 +269,10 @@ def plot_variable(ax, sensor_id: str, sensor_info: dict, axis: str, with_croppin
     ax.set_ylabel(sensor_info['label'] + "\n" + unit_label, fontsize=10)
     # Show grid for better readability
     ax.grid(True)
+
+    if cycle_id is not None:
+        # Show legend for cycles
+        ax.legend(loc='upper right', fontsize=8)
 
 def plot_cycles(cycles: dict) -> None:
     fig, axs = plt.subplots(4, 1, figsize=(16, 9), sharex=True)
@@ -316,6 +357,7 @@ for file_path in measurement_dir.rglob("*.csv"):
         sensor_data.setdefault(trial_name, {})[sensor_id] = {
             'data': df,
             'trial_type': trial_type,
+            'subject_id': subject_id,
             'side': 'right' if trial_type.startswith('Right') else 'left',
             'label': sensor_labels.get(sensor_id, f"Sensor {sensor_id}"),
             'color': sensor_colors.get(sensor_id, 'black')
@@ -339,7 +381,7 @@ for trial_name, sensors in sensor_data.items():
         height=min(sensor_values['FreeAcc_X']) * 0.2,
         min_height=2.0,
         min_time=0.5,
-    )[2:8]
+    )[2:9]
     # Detect lift offs in FreeAcc_X
     lift_offs = detect_peaks(
         time=sensor_values.index.to_numpy(),
@@ -347,11 +389,14 @@ for trial_name, sensors in sensor_data.items():
         height=max(sensor_values['FreeAcc_X']) * 0.2,
         min_height=2.0,
         min_time=0.5,
-    )[2:8]
+    )
     # Remove liftoffs that are before the first push
     for lift_off_time, lift_off_value in lift_offs:
         if not (groud_impacts[0][0] < lift_off_time < groud_impacts[-1][0]):
             lift_offs.remove((lift_off_time, lift_off_value))
+
+    trial_type = sensors['3']['trial_type']
+    subject_id = sensors['3']['subject_id']
 
     for axis in [
         'Euler_Y',
@@ -383,7 +428,16 @@ for trial_name, sensors in sensor_data.items():
                         'lift_offs': len(lift_offs),
                         'cadence': len(groud_impacts) / duration,
                     })
-
+                    index = f"{subject_id}_{trial_type.replace(' ', '_')}"
+                    if index not in trial_stats.index:
+                        trial_stats.loc[index] = {
+                            'Subject': subject_id,
+                            'Trial': trial_type,
+                            'Duration': duration,
+                            'Cadence': len(groud_impacts) / duration,
+                            'Pushes': len(groud_impacts),
+                            'Lift_offs': len(lift_offs),
+                        }
 
 
         # Set the x-axis label for the last subplot
@@ -394,11 +448,36 @@ for trial_name, sensors in sensor_data.items():
         fig.tight_layout(rect=(0, 0, 1, 0.95))
 
         cycles = {}
+        cycle_stats: pd.DataFrame = pd.DataFrame(columns=['Cycle', 'Shank_Euler_Y_range', 'Foot_FreeAcc_X_range', 'Foot_FreeAcc_Z_range', 'Skateboard_FreeAcc_X_range'])
+        cycle_stats.set_index('Cycle', inplace=True)
+        ranges = []
         for i in range(len(groud_impacts) - 1):
+            # Drop bad cycles
+            if i in bad_cycles.get(subject_id, {}).get(trial_type, []):
+                print(f"Skipping bad cycle {i} for {subject_id} - {trial_type}")
+                continue
             for sensor in sensors.keys():
                 cycle_df = sensors[sensor]['data'].copy()
                 cycle_time_mask = (cycle_df.index >= groud_impacts[i][0]) & (cycle_df.index <= groud_impacts[i + 1][0])
                 cycle_df = cycle_df[cycle_time_mask]
+
+                if sensor == '3' and axis == 'Euler_Y':
+                    cycle_segment = cycle_df['Euler_Y']
+                    if not cycle_segment.empty:
+                        cycle_stats.loc[i, 'Shank_Euler_Y_range'] = cycle_segment.max() - cycle_segment.min()
+                elif sensor == '4' and axis == 'FreeAcc_X':
+                    cycle_segment = cycle_df['FreeAcc_X']
+                    if not cycle_segment.empty:
+                        cycle_stats.loc[i, 'Foot_FreeAcc_X_range'] = cycle_segment.max() - cycle_segment.min()
+                elif sensor == '4' and axis == 'FreeAcc_Z':
+                    cycle_segment = cycle_df['FreeAcc_Z']
+                    if not cycle_segment.empty:
+                        cycle_stats.loc[i, 'Foot_FreeAcc_Z_range'] = cycle_segment.max() - cycle_segment.min()
+                elif sensor == '5' and axis == 'FreeAcc_X':
+                    cycle_segment = cycle_df['FreeAcc_X']
+                    if not cycle_segment.empty:
+                        cycle_stats.loc[i, 'Skateboard_FreeAcc_X_range'] = cycle_segment.max() - cycle_segment.min()
+
                 # Normalize time to interval 0-1
                 cycle_df.index = (cycle_df.index - groud_impacts[i][0]) / (groud_impacts[i + 1][0] - groud_impacts[i][0])
                 if i not in cycles:
@@ -411,21 +490,16 @@ for trial_name, sensors in sensor_data.items():
                     'color': sensors[sensor]['color'],
 
                 }
-        ranges = []
 
-        for i in range(len(groud_impacts) - 1):
-            if '3' in sensors:
-                cycle_df = sensors['3']['data'].copy()
-                cycle_time_mask = (cycle_df.index >= groud_impacts[i][0]) & (cycle_df.index <= groud_impacts[i + 1][0])
-                cycle_segment = cycle_df[cycle_time_mask]['Euler_Y']
-                if not cycle_segment.empty:
-                    max_val = cycle_segment.max()
-                    min_val = cycle_segment.min()
-                    ranges.append(max_val - min_val)
+        index = f"{subject_id}_{trial_type.replace(' ', '_')}"
+        if axis == 'Euler_Y':
+            trial_stats.loc[index, 'Shank_Euler_Y_range'] = cycle_stats['Shank_Euler_Y_range'].mean()
+        if axis == 'FreeAcc_X':
+            trial_stats.loc[index, 'Foot_FreeAcc_X_range'] = cycle_stats['Foot_FreeAcc_X_range'].mean()
+            trial_stats.loc[index, 'Skateboard_FreeAcc_X_range'] = cycle_stats['Skateboard_FreeAcc_X_range'].mean()
+        if axis == 'FreeAcc_Z':
+            trial_stats.loc[index, 'Foot_FreeAcc_Z_range'] = cycle_stats['Foot_FreeAcc_Z_range'].mean()
 
-        # Pridaj do štatistiky nový stĺpec, ak máme rozsahy
-        if ranges:
-            stats[-1]['Euler_Y_range_avg'] = sum(ranges) / len(ranges)
         # Save the figure to the output directory
         output_path = output_dir / f"{trial_name.replace(' ', '_')}_{axis}.png"
         fig.savefig(output_path)
@@ -443,6 +517,7 @@ for trial_name, sensors in sensor_data.items():
         #plot_variable(axs[3], '5', sensors['5'], 'Velocity_X')
         # Set the x-axis label for the last subplot
         axs[-1].set_xlabel("Time [s]")
+        fig.suptitle(trial_name, fontsize=16)
         # Adjust the layout to prevent overlap
         fig.tight_layout(rect=(0, 0, 1, 0.95))
         for ax in axs:
@@ -462,17 +537,23 @@ for trial_name, sensors in sensor_data.items():
 
         plot_cycles(cycles)
 
-        fig, axs = plt.subplots(4, 1, figsize=(16, 10), sharex=True)
+        fig, axs = plt.subplots(5, 1, figsize=(16, 10), sharex=True)
 
-        for cycle in cycles.values():
-            plot_variable(axs[0], '3', cycle['3'], 'Euler_Y', False)
-            plot_variable(axs[1], '4', cycle['4'], 'FreeAcc_Z', False)
-            plot_variable(axs[2], '5', cycle['5'], 'FreeAcc_X', False)
-            plot_variable(axs[3], '5', cycle['5'], 'Velocity_X', False)
+        for idx, cycle in cycles.items():
+            plot_variable(axs[0], '3', cycle['3'], 'Euler_Y', with_cropping=False, cycle_id=idx)
+            plot_variable(axs[1], '4', cycle['4'], 'FreeAcc_X', with_cropping=False, cycle_id=idx)
+            plot_variable(axs[2], '4', cycle['4'], 'FreeAcc_Z', with_cropping=False, cycle_id=idx)
+            plot_variable(axs[3], '5', cycle['5'], 'FreeAcc_X', with_cropping=False, cycle_id=idx)
+            plot_variable(axs[4], '5', cycle['5'], 'Velocity_X', with_cropping=False, cycle_id=idx)
             # Set the x-axis label for the last subplot
             axs[-1].set_xlabel("Time [s]")
-            # Adjust the layout to prevent overlap
-            fig.tight_layout(rect=(0, 0, 1, 0.95))
+        for ax in axs:
+            ax.grid(True, which='both', axis='both')
+            ax.set_xticks(np.arange(0, 1.01, 0.1))
+            ax.grid(which='major', linestyle='--', linewidth=0.5, color='gray')
+        fig.suptitle(trial_name, fontsize=16)
+        # Adjust the layout to prevent overlap
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
 
         # for ax in axs:
         #     ax.axvspan(pushes[0][0], lift_offs[0][0], color='green', alpha=0.1)
@@ -508,3 +589,40 @@ with open("stats.csv", 'w', newline='') as f:
     writer = csv.DictWriter(f, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(rounded_stats)
+
+trial_stats.to_csv('trial_stats.csv')
+for subject in subject_info.index:
+    subject_detail = subject_info.loc[subject]
+    dominant_side = subject_detail['DominantSide']
+    subject_trials = trial_stats[
+        (trial_stats['Subject'] == subject) &
+        (trial_stats['Trial'].str.startswith(dominant_side))
+    ]
+    # Calculate the average duration of the trials for the subject
+    results.loc[subject, 'Duration'] = subject_trials['Duration'].mean()
+    # Calculate the average cadence of the trials for the subject
+    results.loc[subject, 'Cadence'] = subject_trials['Cadence'].mean()
+    # Calculate the average range of Shank Euler Y for the subject
+    results.loc[subject, 'Shank_Euler_Y_range'] = subject_trials['Shank_Euler_Y_range'].mean()
+    # Calculate the average range of Foot FreeAcc X for the subject
+    results.loc[subject, 'Foot_FreeAcc_X_range'] = subject_trials['Foot_FreeAcc_X_range'].mean()
+    # Calculate the average range of Foot FreeAcc Z for the subject
+    results.loc[subject, 'Foot_FreeAcc_Z_range'] = subject_trials['Foot_FreeAcc_Z_range'].mean()
+    # Calculate the average range of Skateboard FreeAcc X for the subject
+    results.loc[subject, 'Skateboard_FreeAcc_X_range'] = subject_trials['Skateboard_FreeAcc_X_range'].mean()
+results.to_csv('results.csv')
+
+numeric_cols = [
+    'Age', 'Experience', 'Weight', 'Height',
+    'Duration', 'Cadence',
+    'Shank_Euler_Y_range',
+    'Foot_FreeAcc_X_range', 'Foot_FreeAcc_Z_range',
+    'Skateboard_FreeAcc_X_range',
+]
+corr_matrix = results[numeric_cols].corr()
+
+plt.figure(figsize=(10, 8))
+sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', vmin=-1, vmax=1)
+plt.title("Correlation Matrix of Skateboarding Data")
+plt.tight_layout()
+plt.savefig(output_dir / "correlation_matrix.png")

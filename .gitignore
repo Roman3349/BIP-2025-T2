@@ -6,4 +6,6 @@ venv
 .vscode/
 # Output data
 */plots/
+*/results.csv
 */stats.csv
+*/trial_stats.csv
